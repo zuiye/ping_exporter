@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"html"
 
 	"github.com/digineo/go-ping"
 	mon "github.com/digineo/go-ping/monitor"
@@ -302,6 +303,28 @@ func startServer(collector *pingCollector) {
 		fmt.Fprintf(w, indexHTML, *metricsPath)
 	})
 
+	http.HandleFunc("/edit-config", func(w http.ResponseWriter, r *http.Request) {
+		if !hasValidToken(r, w) {
+			return
+		}
+	
+		if *configFile == "" {
+			http.Error(w, "Configuration file path not specified", http.StatusBadRequest)
+			return
+		}
+	
+		switch r.Method {
+		case http.MethodGet:
+			// 读取并显示当前配置文件内容
+			serveConfig(w, r)
+		case http.MethodPost:
+			// 保存新的配置文件内容
+			updateConfig(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collector)
 
@@ -336,6 +359,65 @@ func startServer(collector *pingCollector) {
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func serveConfig(w http.ResponseWriter, _ *http.Request) {
+    // 读取并显示当前配置文件内容
+		content, err := os.ReadFile(*configFile)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error reading config file: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `
+			<html>
+			<head>
+				<title>Edit Configuration</title>
+				<style>
+					textarea { width: 80%%; height: 400px; font-family: monospace; }
+					.container { width: 90%%; margin: 20px auto; }
+				</style>
+			</head>
+			<body>
+				<div class="container">
+					<h1>Edit Configuration</h1>
+					<form method="POST">
+						<textarea name="config">%s</textarea><br/>
+						<button type="submit">Save Changes</button>
+					</form>
+					<div class="button-container">
+						<a href="/" class="button">Return to Home</a>
+					</div>
+				</div>
+			</body>
+			</html>`,
+			html.EscapeString(string(content)))
+}
+
+func updateConfig(w http.ResponseWriter, r *http.Request) {
+	// 保存新的配置文件内容
+	newContent := r.FormValue("config")
+	if newContent == "" {
+		http.Error(w, "Empty configuration content", http.StatusBadRequest)
+		return
+	}
+
+	// 验证YAML格式
+	if _, err := config.FromYAML(strings.NewReader(newContent)); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid YAML format: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 写入文件
+	if err := os.WriteFile(*configFile, []byte(newContent), 0644); err != nil {
+		http.Error(w, fmt.Sprintf("Error saving configuration: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "Configuration saved successfully. Changes will be applied automatically within", *dnsRefresh)
+
 }
 
 func hasValidToken(r *http.Request, w http.ResponseWriter) bool {
@@ -477,6 +559,7 @@ const indexHTML = `<!doctype html>
 <body>
 	<h1>ping Exporter</h1>
 	<p><a href="%s">Metrics</a></p>
+	<p><a href="/edit-config">EditConfig</a></p>
 	<h2>More information:</h2>
 	<p><a href="https://github.com/czerwonk/ping_exporter">github.com/czerwonk/ping_exporter</a></p>
 </body>
